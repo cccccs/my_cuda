@@ -8,7 +8,9 @@
 // 基础矩阵乘法核函数 - 每个线程计算C矩阵的一个元素
 __global__ void matmul_kernel_basic(const float *A, const float *B, float *C, 
                                     int M, int N, int K) {
-    int m = blockIdx.x * blockDim.x + threadIdx.x;
+    int m = blockIdx.x * blockDim.x + threadIdx.x; // 512
+    printf("blockDim.x:%d\n blockDim.y:%d\n gridDim.x:%d\n gridDim.y:%d\n", blockDim.x, blockDim.y,
+           gridDim.x, gridDim.y);
     int n = blockIdx.y * blockDim.y + threadIdx.y;
     float res = 0;
     for (int i = 0; i < K;i++) {
@@ -17,10 +19,25 @@ __global__ void matmul_kernel_basic(const float *A, const float *B, float *C,
     C[m*N + n] = res;
 }
 
-// 使用共享内存的矩阵乘法核函数（优化版本）
+// 使用共享内存的矩阵乘法核函数（优化版本）- 每个线程计算C矩阵一个
 __global__ void matmul_kernel_shared(const float *A, const float *B, float *C,
                                      int M, int N, int K) {
-
+    constexpr int TILE_LEN = 32;
+    extern __shared__ float a[TILE_LEN][TILE_LEN];
+    extern __shared__ float b[TILE_LEN][TILE_LEN];
+    int m = blockIdx.x * TILE_LEN + threadIdx.x;
+    int n = blockIdx.y * TILE_LEN + threadIdx.y;
+    float sum = 0;
+    for (int i = 0; i < (K+TILE_LEN-1) / TILE_LEN; i++) {
+        a[threadIdx.x][threadIdx.y] = A[m*K+i*TILE_LEN+threadIdx.y];
+        b[threadIdx.x][threadIdx.y] = B[(i*TILE_LEN+threadIdx.x)*N+n];
+        __syncthreads();
+        for (int j = 0; j < TILE_LEN;j++) {
+            sum += a[threadIdx.x][j] * b[j][threadIdx.y];
+        }
+        __syncthreads();
+    }
+    C[m*N+n] = sum;
 }
 
 // 主机端CPU矩阵乘法，用于验证结果
@@ -168,7 +185,7 @@ int main(int argc, char *argv[]) {
     // 设置矩阵维度
     int M = 512;  // A矩阵行数，C矩阵行数
     int K = 256;  // A矩阵列数，B矩阵行数
-    int N = 512;  // B矩阵列数，C矩阵列数
+    int N = 1024;  // B矩阵列数，C矩阵列数
     
     int iterations = 10;          // 执行次数
 
@@ -219,18 +236,18 @@ int main(int argc, char *argv[]) {
     }
     
     // 预热执行（不测量时间）
-    printf("\n预热执行 (%d 次)...\n", warmup_iterations);
-    for (int i = 0; i < warmup_iterations; i++) {
-        cudaMemcpy(d_A, h_A, M * K * sizeof(float), cudaMemcpyHostToDevice);
-        cudaMemcpy(d_B, h_B, K * N * sizeof(float), cudaMemcpyHostToDevice);
+    // printf("\n预热执行 (%d 次)...\n", warmup_iterations);
+    // for (int i = 0; i < warmup_iterations; i++) {
+    //     cudaMemcpy(d_A, h_A, M * K * sizeof(float), cudaMemcpyHostToDevice);
+    //     cudaMemcpy(d_B, h_B, K * N * sizeof(float), cudaMemcpyHostToDevice);
         
-        dim3 blockDim(block_size, block_size);
-        dim3 gridDim((N + block_size - 1) / block_size,
-                     (M + block_size - 1) / block_size);
+    //     dim3 blockDim(block_size, block_size);
+    //     dim3 gridDim((N + block_size - 1) / block_size,
+    //                  (M + block_size - 1) / block_size);
         
-        matmul_kernel_basic<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
-        cudaMemcpy(h_C_gpu, d_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
-    }
+    //     matmul_kernel_basic<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
+    //     cudaMemcpy(h_C_gpu, d_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    // }
     cudaDeviceSynchronize();
     printf("预热完成\n");
     
