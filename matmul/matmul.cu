@@ -8,15 +8,24 @@
 // 基础矩阵乘法核函数 - 每个线程计算C矩阵的一个元素
 __global__ void matmul_kernel_basic(const float *A, const float *B, float *C, 
                                     int M, int N, int K) {
-    int m = blockIdx.x * blockDim.x + threadIdx.x; // 512
-    printf("blockDim.x:%d\n blockDim.y:%d\n gridDim.x:%d\n gridDim.y:%d\n", blockDim.x, blockDim.y,
-           gridDim.x, gridDim.y);
-    int n = blockIdx.y * blockDim.y + threadIdx.y;
-    float res = 0;
-    for (int i = 0; i < K;i++) {
-        res += A[m*K + i] * B[i*N + n];
+    /*
+       M * K，K * N
+
+        k k k k       n n n (x轴)
+       m             k
+       m             k
+       m(y轴)        k
+                     k
+    */
+    int m = blockIdx.y * blockDim.y + threadIdx.y; // 512
+    int n = blockIdx.x * blockDim.x + threadIdx.x; // 1024
+    if (m < M && n < N) {
+        float res = 0;
+        for (int i = 0; i < K;i++) {
+            res += A[m*K + i] * B[i*N + n];
+        }
+        C[m*N + n] = res;
     }
-    C[m*N + n] = res;
 }
 
 // 使用共享内存的矩阵乘法核函数（优化版本）- 每个线程计算C矩阵一个
@@ -25,15 +34,27 @@ __global__ void matmul_kernel_shared(const float *A, const float *B, float *C,
     constexpr int TILE_LEN = 32;
     extern __shared__ float a[TILE_LEN][TILE_LEN];
     extern __shared__ float b[TILE_LEN][TILE_LEN];
-    int m = blockIdx.x * TILE_LEN + threadIdx.x;
-    int n = blockIdx.y * TILE_LEN + threadIdx.y;
+    int m = blockIdx.y * TILE_LEN + threadIdx.y;
+    int n = blockIdx.x * TILE_LEN + threadIdx.x;
     float sum = 0;
     for (int i = 0; i < (K+TILE_LEN-1) / TILE_LEN; i++) {
-        a[threadIdx.x][threadIdx.y] = A[m*K+i*TILE_LEN+threadIdx.y];
-        b[threadIdx.x][threadIdx.y] = B[(i*TILE_LEN+threadIdx.x)*N+n];
+        int a_row = m;
+        int a_col = i*TILE_LEN+threadIdx.x;
+        if (a_row < M && a_col < K) {
+            a[threadIdx.y][threadIdx.x] = A[a_row*K+a_col];
+        } else {
+            a[threadIdx.y][threadIdx.x] = 0;
+        }
+        int b_row = i*TILE_LEN+threadIdx.y;
+        int b_col = n;
+        if (b_row < K && b_col < N) {
+            b[threadIdx.y][threadIdx.x] = B[b_row*N+n];
+        } else {
+            b[threadIdx.y][threadIdx.x] = 0;
+        }
         __syncthreads();
         for (int j = 0; j < TILE_LEN;j++) {
-            sum += a[threadIdx.x][j] * b[j][threadIdx.y];
+            sum += a[threadIdx.y][j] * b[j][threadIdx.x];
         }
         __syncthreads();
     }
@@ -237,17 +258,17 @@ int main(int argc, char *argv[]) {
     
     // 预热执行（不测量时间）
     // printf("\n预热执行 (%d 次)...\n", warmup_iterations);
-    // for (int i = 0; i < warmup_iterations; i++) {
-    //     cudaMemcpy(d_A, h_A, M * K * sizeof(float), cudaMemcpyHostToDevice);
-    //     cudaMemcpy(d_B, h_B, K * N * sizeof(float), cudaMemcpyHostToDevice);
+    for (int i = 0; i < warmup_iterations; i++) {
+        cudaMemcpy(d_A, h_A, M * K * sizeof(float), cudaMemcpyHostToDevice);
+        cudaMemcpy(d_B, h_B, K * N * sizeof(float), cudaMemcpyHostToDevice);
         
-    //     dim3 blockDim(block_size, block_size);
-    //     dim3 gridDim((N + block_size - 1) / block_size,
-    //                  (M + block_size - 1) / block_size);
+        dim3 blockDim(block_size, block_size);
+        dim3 gridDim((N + block_size - 1) / block_size,
+                     (M + block_size - 1) / block_size);
         
-    //     matmul_kernel_basic<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
-    //     cudaMemcpy(h_C_gpu, d_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
-    // }
+        matmul_kernel_basic<<<gridDim, blockDim>>>(d_A, d_B, d_C, M, N, K);
+        cudaMemcpy(h_C_gpu, d_C, M * N * sizeof(float), cudaMemcpyDeviceToHost);
+    }
     cudaDeviceSynchronize();
     printf("预热完成\n");
     
@@ -257,11 +278,11 @@ int main(int argc, char *argv[]) {
     run_matmul_test(h_A, h_B, h_C_gpu, d_A, d_B, d_C,
                     M, N, K, block_size, iterations, false);
     
-    // // 测试共享内存版本
-    // printf("\n[测试2] 优化版本矩阵乘法（共享内存）\n");
-    // printf("========================================\n");
-    // run_matmul_test(h_A, h_B, h_C_gpu, d_A, d_B, d_C,
-    //                 M, N, K, 32, iterations, true);  // 共享内存版本使用32x32的块
+    // 测试共享内存版本
+    printf("\n[测试2] 优化版本矩阵乘法（共享内存）\n");
+    printf("========================================\n");
+    run_matmul_test(h_A, h_B, h_C_gpu, d_A, d_B, d_C,
+                    M, N, K, 32, iterations, true);  // 共享内存版本使用32x32的块
     
     // 在CPU上计算用于验证
     printf("\n在CPU上计算用于验证...\n");
