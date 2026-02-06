@@ -8,15 +8,24 @@
 // 基础矩阵乘法核函数 - 每个线程计算C矩阵的一个元素
 __global__ void matmul_kernel_basic(const float *A, const float *B, float *C, 
                                     int M, int N, int K) {
-    int m = blockIdx.x * blockDim.x + threadIdx.x; // 512
-    printf("blockDim.x:%d\n blockDim.y:%d\n gridDim.x:%d\n gridDim.y:%d\n", blockDim.x, blockDim.y,
-           gridDim.x, gridDim.y);
-    int n = blockIdx.y * blockDim.y + threadIdx.y;
-    float res = 0;
-    for (int i = 0; i < K;i++) {
-        res += A[m*K + i] * B[i*N + n];
+    /*
+       M * K，K * N
+
+        k k k k       n n n (x轴)
+       m             k
+       m             k
+       m(y轴)        k
+                     k
+    */
+    int m = blockIdx.y * blockDim.y + threadIdx.y; // 512
+    int n = blockIdx.x * blockDim.x + threadIdx.x; // 1024
+    if (m < M && n < N) {
+        float res = 0;
+        for (int i = 0; i < K;i++) {
+            res += A[m*K + i] * B[i*N + n];
+        }
+        C[m*N + n] = res;
     }
-    C[m*N + n] = res;
 }
 
 // 使用共享内存的矩阵乘法核函数（优化版本）- 每个线程计算C矩阵一个
